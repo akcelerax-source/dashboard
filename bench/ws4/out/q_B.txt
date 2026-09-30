@@ -1,3 +1,0 @@
-centralized   S01 n=10 s=1 done=10/10 sim=112.4 (base 10/10 sim=112.4) cyc=61.38 wait=0.25 stops=5.2 near=10 cbsBounded=1/14 digest=diff wall=1.307
-centralized   S08 n=10 s=1 done=40/42 sim=600 (base 42/42 sim=434.4) cyc=161.147 wait=0.436 stops=40.8 near=80 cbsBounded=1/93 digest=diff wall=5.148
-centralized   S13 n=10 s=1 done=52/52 sim=418.6 (base 52/52 sim=418.6) cyc=212.046 wait=0.287 stops=51.9 near=89 cbsBounded=1/74 digest=diff wall=3.308

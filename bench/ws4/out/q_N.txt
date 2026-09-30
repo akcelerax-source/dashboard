@@ -1,6 +1,0 @@
-decentralized S01 n=10 s=1 done=10/10 sim=77.5 (base 10/10 sim=126.8) cyc=49.52 wait=0.125 stops=9.5 near=6 digest=diff wall=1.46
-ace           S01 n=10 s=1 done=10/10 sim=113.2 (base 10/10 sim=249.6) cyc=56.74 wait=0.245 stops=12 near=20 digest=diff wall=2.238
-decentralized S08 n=10 s=1 done=42/42 sim=280.4 (base 29/42 sim=600) cyc=152.16 wait=0.25 stops=51.1 near=49 digest=diff wall=4.632
-ace           S08 n=10 s=1 done=38/42 sim=600 (base 42/42 sim=389.8) cyc=207.803 wait=0.452 stops=89.4 near=110 digest=diff wall=12.045
-decentralized S13 n=10 s=1 done=52/52 sim=858.4 (base 52/52 sim=488.7) cyc=225.037 wait=0.514 stops=98.2 near=166 digest=diff wall=14.81
-ace           S13 n=10 s=1 done=31/52 sim=900 (base 48/52 sim=900) cyc=167.548 wait=0.768 stops=86.5 near=597 digest=diff wall=22.115

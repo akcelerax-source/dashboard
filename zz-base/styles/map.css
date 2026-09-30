@@ -1,0 +1,360 @@
+/* ==========================================================================
+   NODEX ACE - Warehouse Map, Canvas Overlays & Mini-Map Styling
+   ========================================================================== */
+
+.map-card-container {
+  position: relative;
+  background: #0A111F;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.map-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #0A111F;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.map-viewport:active {
+  cursor: grabbing;
+}
+
+.map-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* --------------------------------------------------------------------------
+   Map Floating HUD Overlays
+   -------------------------------------------------------------------------- */
+.map-hud-top-left {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
+}
+
+.map-view-toggle {
+  display: inline-flex;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(8px);
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.view-toggle-btn {
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 700;
+  color: #94A3B8;
+  transition: all var(--transition-fast);
+}
+
+.view-toggle-btn.active {
+  background: #FFFFFF;
+  color: #0F172A;
+}
+
+.map-hud-top-right {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
+}
+
+.map-facility-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(10px);
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: white;
+}
+
+.facility-thumb {
+  width: 38px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(135deg, #334155, #1E293B);
+  background-size: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.facility-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.facility-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.facility-sub {
+  font-size: 9px;
+  color: #94A3B8;
+}
+
+.facility-change-btn {
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-sm);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.facility-change-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Layer Checklist Dropdown */
+.map-layers-dropdown {
+  position: relative;
+}
+
+.layers-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  padding: 5px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.layers-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  min-width: 200px;
+  box-shadow: var(--shadow-lg);
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 20;
+}
+
+.layers-menu.show {
+  display: flex;
+}
+
+.layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.layer-item input[type="checkbox"] {
+  accent-color: var(--accent-primary);
+}
+
+/* HUD Bottom Left - Scale and Compass */
+.map-hud-bottom-left {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.compass-rose {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+.scale-ruler {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scale-ticks {
+  display: flex;
+  justify-content: space-between;
+  width: 100px;
+  font-size: 8.5px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.scale-bar {
+  width: 100px;
+  height: 4px;
+  background: var(--text-secondary);
+  border: 1px solid white;
+  border-radius: 2px;
+}
+
+/* Map Legend Overlay */
+.map-legend-card {
+  position: absolute;
+  top: 60px;
+  left: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 11px;
+  box-shadow: var(--shadow-sm);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.legend-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.legend-icon.robot {
+  border-radius: 50%;
+  background: #2563EB;
+  border: 2px solid white;
+}
+
+.legend-icon.planned-path {
+  height: 2px;
+  width: 12px;
+  background: #0EA5E9;
+}
+
+.legend-icon.active-path {
+  height: 3px;
+  width: 12px;
+  background: #10B981;
+}
+
+.legend-icon.coord-env {
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.3);
+  border: 1.5px solid #3B82F6;
+}
+
+.legend-icon.conflict-zone {
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.35);
+  border: 1.5px solid #EF4444;
+}
+
+.legend-icon.restricted {
+  background: repeating-linear-gradient(
+    45deg,
+    #EF4444,
+    #EF4444 2px,
+    #FEF2F2 2px,
+    #FEF2F2 4px
+  );
+  border: 1px solid #EF4444;
+}
+
+/* Map HUD Zoom Controls */
+.map-hud-bottom-right {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 10;
+}
+
+.map-control-btn {
+  width: 32px;
+  height: 32px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+}
+
+.map-control-btn:hover {
+  background: #FFFFFF;
+  border-color: var(--border-strong);
+}
+
+/* Mini-Map Canvas */
+.mini-map-canvas {
+  width: 100%;
+  height: 100px;
+  background: #EDF2F7;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  display: block;
+}

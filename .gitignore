@@ -1,10 +1,42 @@
+# Dependencies and build output
 node_modules/
 dist/
-.vitest/
-*.log
+
+# Python
 __pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+*.log
+
+# Local environment
+.env
+.env.*
+.DS_Store
+Thumbs.db
+
+# Backend runtime state: keep the seed (shared_state.json), drop backups
 backend/shared_state.backup-*.json
-backend/*.tmp
-# Scratch working copies used during development
-zz-*/
+
+# Working snapshots of src/ made during refactors. zz-base stays: it is the
+# frozen baseline tree the benchmark harness runs against (--src zz-base).
+zz-deadlock-wip/
+zz-postrestore-backup/
+zz-premerge/
+zz-ws1/
+zz-ws2/
+zz-ws3/
+zz-ws4/
+
+# Raw benchmark output (regenerable with bench/run-matrix.mjs).
+# Markdown analyses and summary JSON are kept.
+bench/**/*.jsonl
+bench/**/snap/
+bench/**/out/
+
+# Tool caches and local agent config
+.vitest/
 .claude/
+backend/*.tmp

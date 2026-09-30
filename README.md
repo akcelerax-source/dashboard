@@ -118,3 +118,37 @@ API endpoints will be live at **`http://localhost:8000/`**:
 - `POST /api/hitl/request`
 - `POST /api/hitl/release`
 - `WebSocket /ws/telemetry`
+
+Full endpoint and configuration list: [backend/README.md](backend/README.md).
+
+### 3. Tests
+```bash
+npm test
+```
+Runs the Vitest suites in `tests/` headlessly (no browser needed). See [tests/README.md](tests/README.md).
+
+### 4. Docker (dashboard + backend on one port)
+```bash
+docker build -t nodex-ace .
+docker run -p 8000:8000 nodex-ace
+```
+FastAPI serves the built dashboard at `/` and the API/WebSocket at `/api` and `/ws`. Set `NODEX_DATA_DIR` to a mounted volume to persist run history.
+
+### 5. GitHub Pages (static demo)
+`.github/workflows/pages.yml` builds the dashboard with `VITE_STATIC_DATA=1` on every push to `main` and ships `backend/shared_state.json` as a static file, so no backend is needed. Enable once: **Settings > Pages > Source: GitHub Actions**.
+
+---
+
+## Repository Layout
+
+| Path | Contents |
+|------|----------|
+| `index.html`, `src/` | Dashboard source (vanilla JS + Vite). `src/core/` holds the simulator and the three coordination systems (`centralized/`, `decentralized/`, `ace/`); `src/screens/` holds the four screens. |
+| `public/` | Static assets. |
+| `backend/` | FastAPI server and shared run history. See [backend/README.md](backend/README.md). |
+| `tests/` | Vitest regression suites. See [tests/README.md](tests/README.md). |
+| `bench/` | Headless benchmark harness and analysis scripts. See [bench/README.md](bench/README.md). |
+| `zz-base/` | Frozen pre-optimization copy of `src/`, used as the benchmark baseline. See [zz-base/README.md](zz-base/README.md). |
+| `docs/` | Architecture, experiment and results write-ups. See [docs/README.md](docs/README.md). |
+| `*_REPORT.md`, `PHASE2_*.md` | Audit and implementation reports from development phases. |
+| `Dockerfile`, `.github/workflows/` | Deployment. |
