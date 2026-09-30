@@ -438,6 +438,36 @@ async def shared_websocket(websocket: WebSocket):
         SHARED_CLIENTS.discard(websocket)
 
 
+# Keep-alive: Render's free plan sleeps a service after 15 min without inbound
+# requests. When running on Render (RENDER_EXTERNAL_URL is set by Render),
+# request our own public URL every 10 min; the request enters through Render's
+# edge, so it counts as traffic. Disable with NODEX_KEEPALIVE=0.
+KEEPALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL")
+KEEPALIVE_SECONDS = 600
+
+
+def _ping(url):
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=30) as res:
+        return res.status
+
+
+async def _keepalive_loop():
+    url = KEEPALIVE_URL.rstrip("/") + "/healthz"
+    while True:
+        await asyncio.sleep(KEEPALIVE_SECONDS)
+        try:
+            await asyncio.to_thread(_ping, url)
+        except Exception as exc:
+            print(f"[keepalive] ping failed: {exc}")
+
+
+@app.on_event("startup")
+async def _start_keepalive():
+    if KEEPALIVE_URL and os.environ.get("NODEX_KEEPALIVE") != "0":
+        asyncio.create_task(_keepalive_loop())
+
+
 @app.get("/healthz")
 def healthz():
     """Liveness probe for the hosting platform and uptime monitors."""
