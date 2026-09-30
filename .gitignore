@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vitest/
+*.log
+__pycache__/
+backend/shared_state.backup-*.json
+backend/*.tmp
+# Scratch working copies used during development
+zz-*/
+.claude/

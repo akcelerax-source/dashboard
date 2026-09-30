@@ -1,0 +1,3 @@
+(node:27832) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+merged 42 runs from 3 shards into bench\ws2\results\c8.jsonl in 68 s; exit codes 0,0,0

@@ -1,0 +1,552 @@
+diff -ruN src/core/ace/AceSessionManager.js zz-ws2/core/ace/AceSessionManager.js
+--- src/core/ace/AceSessionManager.js	2026-09-27 17:44:25.533358800 -0700
++++ zz-ws2/core/ace/AceSessionManager.js	2026-09-28 22:54:47.395106300 -0700
+@@ -21,6 +21,13 @@
+ import { MapGeometryEngine } from "../map-geometry.js";
+ import { INTERSECTION_ZONE_RADIUS } from "../intersection-reservation.js";
+ 
++import { aceFeature } from "./ace-features.js";
++import { WaitForResolver, WAITFOR_ENABLED, WF_PROBE, WF_RESOLVE } from "./WaitForResolver.js";
++
++const CONTRACT_PHYSICAL = aceFeature("ws2-contract-physical");
++// Local right-of-way reasons that encode a physical precedence (RobotAgent._rightOfWay).
++const PHYSICAL_RULES = new Set(["Lane leader proceeds", "Merging AMR yields to lane traffic", "Holds intersection"]);
++
+ export const SLOT_SECONDS = 2.0;
+ const MAX_GROUP = 8;
+ const REGION_RADIUS = INTERSECTION_ZONE_RADIUS + 6;
+@@ -41,6 +48,9 @@
+       contractHolds: 0, // ticks spent holding at a contract region edge
+       scopeChanges: 0, sessionReplans: 0
+     };
++    // ws2-waitfor: distributed circular-wait detection / resolution.
++    this.wfr = WAITFOR_ENABLED ? new WaitForResolver(agent) : null;
++    this.holdFor = null; // earlier member I last held for at the region edge
+   }
+ 
+   get id() { return this.agent.robotId; }
+@@ -191,6 +201,10 @@
+ 
+   onMessage(msg, now) {
+     const p = msg.payload || {};
++    if (msg.type === WF_PROBE || msg.type === WF_RESOLVE) {
++      if (this.wfr) this.wfr.onMessage(msg, now);
++      return;
++    }
+     if (msg.type === MESSAGE_TYPES.ACE_SESSION_OPEN) {
+       const inc = p.session;
+       if (!inc || !inc.members.includes(this.id)) return;
+@@ -253,9 +267,15 @@
+    * contract: then the robot's local rule applies). The contract only
+    * arbitrates robots that both compete for the contracted region.
+    */
+-  decide(peerId) {
++  decide(peerId, localReason = null) {
+     const s = this.session;
+     if (!s || !s.contract.order.includes(peerId)) return null;
++    // ws2-contract-physical: the contract orders robots that compete for the
++    // region; it never overrides a physical precedence (a follower cannot pass
++    // its lane leader, a bay robot cannot enter an occupied lane, a robot
++    // inside the hub must leave it first). Overriding those only produced
++    // mutual waits that the timeout tie-break had to undo.
++    if (CONTRACT_PHYSICAL && localReason && PHYSICAL_RULES.has(localReason)) return null;
+     if (!this._usesRegion(this.id) || !this._usesRegion(peerId)) return null;
+     if (this.cleared.has(peerId)) return { iWin: true, reason: "Contract: peer already cleared region" };
+     const now = this.agent.simNow;
+@@ -284,6 +304,7 @@
+     if (!slot || now >= slot.start) return false;
+     const ahead = o.slice(0, mine).filter(m => !this.cleared.has(m) && this._usesRegion(m) && !this._forfeited(m, now));
+     if (ahead.length === 0) return false;
++    this.holdFor = ahead[0];
+     this.stats.contractHolds++;
+     return true;
+   }
+diff -ruN src/core/ace/WaitForResolver.js zz-ws2/core/ace/WaitForResolver.js
+--- src/core/ace/WaitForResolver.js	1969-12-31 16:00:00.000000000 -0800
++++ zz-ws2/core/ace/WaitForResolver.js	2026-09-28 23:04:55.622393600 -0700
+@@ -0,0 +1,317 @@
++// ==========================================================================
++// NODEX ACE - distributed wait-for cycle detection and resolution
++// (System 3 only, feature "ws2-waitfor"). One instance per robot.
++//
++// Every robot knows whom it is waiting for right now:
++//   yield    - it yields right of way to that peer (a rule decision),
++//   contract - it holds at a contract region edge for an earlier member,
++//   block    - its next step would close below the engine's 30 px
++//              separation to that robot (physical),
++//   node     - that robot occupies / holds the intersection it must enter,
++//   corridor - that robot is oncoming on the lane it must enter,
++//   merge    - that robot is at the lane point it must merge onto,
++//   hold     - it holds in a back-off refuge until that robot passed.
++// A robot that has made no progress for PROBE_AFTER_S sends a probe along
++// its wait-for edge (edge chasing, Chandy-Misra-Haas 1983). A stalled
++// receiver appends itself and forwards the probe along its own edge. A probe
++// that returns to its origin has travelled a circular wait; its path lists
++// every member with its edge kind, whether the edge is physical, how long
++// the member has waited and whether it can back off. Only the member with
++// the lowest id resolves, so each cycle gets exactly one decision:
++//   - if some member waits voluntarily (yield / contract edge whose next step
++//     is physically free), the one that has waited longest proceeds
++//     (PIBT-style priority: waiting time, then id);
++//   - otherwise (all edges physical) the member that has waited least and
++//     can move away backs off (retreat to a refuge, turn back, or - for a
++//     robot caught half-way out of its bay - step back into the bay).
++// Everything uses the robot's own state, its sensors and peer messages.
++// ==========================================================================
++
++import { aceFeature } from "./ace-features.js";
++import { MapGeometryEngine, ROBOT_FOOTPRINT } from "../map-geometry.js";
++import { startBackoff, retreatFeasible } from "../deadlock-backoff.js";
++import { adoptRoute } from "../traffic-recovery.js";
++
++export const WAITFOR_ENABLED = aceFeature("ws2-waitfor");
++
++export const WF_PROBE = "ACE_WF_PROBE";
++export const WF_RESOLVE = "ACE_WF_RESOLVE";
++
++const PROBE_AFTER_S = 1.0;     // no progress this long before probing
++const PROBE_EVERY_S = 1.0;     // probe period while stalled
++const FORWARD_AFTER_S = 0.5;   // a member must itself be stalled this long
++const OVERRIDE_S = 3.0;        // right-of-way override granted to a proceeding member
++const RESOLVE_COOLDOWN_S = 3.0;
++const MAX_HOPS = 10;
++const SEP = ROBOT_FOOTPRINT.totalRadius * 2 - 2;   // engine separation guard (30 px)
++const BAY_OFFSET = ROBOT_FOOTPRINT.totalRadius * 2 + 2; // bay row distance from a centerline (34 px)
++const VOLUNTARY = new Set(["yield", "contract"]);
++
++export class WaitForResolver {
++  constructor(agent) {
++    this.agent = agent;
++    this.wf = null;               // { id, kind, phys }
++    this.noProgressSince = null;
++    this._lastPos = null;
++    this._lastProbe = -Infinity;
++    this.override = null;         // { peerId, until }
++    this._resolved = new Map();   // cycle key -> sim time
++    this._canBack = { at: -Infinity, v: false };
++    this.stats = { probes: 0, forwards: 0, cycles: 0, proceeds: 0, backoffs: 0 };
++  }
++
++  get id() { return this.agent.robotId; }
++
++  /** Right-of-way override for `peerId` granted by a cycle resolution. */
++  overrides(peerId, now) {
++    const o = this.override;
++    return !!o && now < o.until && (peerId === undefined || o.peerId === peerId);
++  }
++
++  /** Per tick, after the robot's traffic decisions (ACE agents only). */
++  update(now) {
++    const a = this.agent, ls = a.localState;
++    const moved = !this._lastPos || Math.hypot(ls.x - this._lastPos.x, ls.y - this._lastPos.y) > 0.05;
++    this._lastPos = { x: ls.x, y: ls.y };
++    if (moved || this.noProgressSince === null) this.noProgressSince = now;
++    if (this.override && now >= this.override.until) this.override = null;
++    this.wf = this._edge(moved);
++    if (!this.wf) return;
++    if (this.wf.kind === "block" && now - this.noProgressSince > 3 && this._realignToLane(now)) return;
++    if (now - this.noProgressSince < PROBE_AFTER_S || now - this._lastProbe < PROBE_EVERY_S) return;
++    this._lastProbe = now;
++    this.stats.probes++;
++    a.peerBus.unicast(this.id, this.wf.id, WF_PROBE, { origin: this.id, path: [this._node(now)] });
++  }
++
++  /** My current wait-for edge, or null when I am not waiting on a robot. */
++  _edge(moved) {
++    const a = this.agent, ls = a.localState;
++    if (!ls.currentTaskId || ls.handling || ls.hitlHold || ls.status === "ERROR") return null;
++    const m = ls._maneuver;
++    if (m) return m.phase === "hold" && m.blockerId ? { id: m.blockerId, kind: "hold", phys: true } : null;
++    if (a._yieldTo) return { id: a._yieldTo, kind: "yield", phys: !!this._physBlocker() };
++    if (moved) return null;
++    const pb = this._physBlocker();
++    if (pb) return { id: pb, kind: "block", phys: true };
++    const perm = a._permBy;
++    if (perm && perm.id) return { id: perm.id, kind: perm.kind, phys: !VOLUNTARY.has(perm.kind) || !!this._physBlocker() };
++    return null;
++  }
++
++  /**
++   * The robot my next step toward my target would close on below the
++   * engine's separation distance (from my own sensor frame), or null.
++   */
++  _physBlocker() {
++    const a = this.agent, ls = a.localState;
++    const hx = ls.targetX - ls.x, hy = ls.targetY - ls.y, hm = Math.hypot(hx, hy);
++    if (!(hm > 1)) return null;
++    const step = Math.min(hm, 2.5);
++    const nx = ls.x + (hx / hm) * step, ny = ls.y + (hy / hm) * step;
++    let best = null, bd = Infinity;
++    for (const d of a._frame().detections) {
++      const dn = Math.hypot(d.x - nx, d.y - ny);
++      if (dn < SEP && dn < d.dist && d.dist < bd) { best = d.id; bd = d.dist; }
++    }
++    return best;
++  }
++
++  /**
++   * Physically blocked while straddling a lane edge (off the centerline but
++   * inside its separation band, e.g. after an aborted merge or back-off):
++   * the leg runs beside the lane into parked robots. Step onto the centerline
++   * and replan from there (own planner, own stops).
++   */
++  _realignToLane(now) {
++    const a = this.agent, ls = a.localState;
++    if (now - (this._realignAt ?? -Infinity) < 5) return false;
++    const foot = MapGeometryEngine.projectToNearestAisle(ls.x, ls.y);
++    if (!foot) return false;
++    const gap = Math.hypot(ls.x - foot.x, ls.y - foot.y);
++    if (gap < 3 || gap >= SEP) return false;
++    const rest = a._planViaPickup({ x: foot.x, y: foot.y });
++    if (!Array.isArray(rest) || rest.length < 1) return false;
++    this._realignAt = now;
++    adoptRoute(ls, [{ x: ls.x, y: ls.y }, { x: foot.x, y: foot.y }, ...rest.slice(1)]);
++    a.logDecision("ACE_LANE_REALIGN", `Blocked beside the lane (${gap.toFixed(0)} px off centerline); stepping onto it and replanning.`);
++    a.broadcastStateAndIntent();
++    return true;
++  }
++
++  _node(now) {
++    return { id: this.id, kind: this.wf.kind, phys: this.wf.phys, waited: +(now - this.noProgressSince).toFixed(2), back: this._canBackOff(now) };
++  }
++
++  onMessage(msg, now) {
++    const p = msg.payload || {};
++    if (msg.type === WF_PROBE) {
++      if (p.origin === this.id) { this._onCycle(p.path || [], now); return; }
++      const path = p.path || [];
++      if (!this.wf || path.length >= MAX_HOPS || path.some(n => n.id === this.id)) return;
++      if (now - this.noProgressSince < FORWARD_AFTER_S) return;
++      this.stats.forwards++;
++      this.agent.peerBus.unicast(this.id, this.wf.id, WF_PROBE, { origin: p.origin, path: [...path, this._node(now)] });
++    } else if (msg.type === WF_RESOLVE) {
++      if (p.action === "make_room") { this._makeRoom(msg.senderId, p.hops || 0, now); return; }
++      // Act only if the edge the decision was made on still holds.
++      if (!this.wf || this.wf.id !== p.peerId) return;
++      this._apply(p.action, p.peerId, now, p.cycle || []);
++    }
++  }
++
++  _onCycle(path, now) {
++    if (path.length < 2 || !this.wf) return;
++    const ids = path.map(n => n.id);
++    if (ids.some(i => i < this.id)) return; // the lowest id member resolves
++    const key = [...ids].sort().join(",");
++    if (now - (this._resolved.get(key) ?? -Infinity) < RESOLVE_COOLDOWN_S) return;
++    this._resolved.set(key, now);
++    if (this._resolved.size > 64) this._resolved.delete(this._resolved.keys().next().value);
++    this.stats.cycles++;
++    const next = (i) => ids[(i + 1) % ids.length];
++    // PIBT-style priority: longer wait first, then lower id.
++    const prio = (u, v) => v.n.waited - u.n.waited || (u.n.id < v.n.id ? -1 : 1);
++    const members = path.map((n, i) => ({ n, peer: next(i) }));
++    const voluntary = members.filter(x => VOLUNTARY.has(x.n.kind) && !x.n.phys).sort(prio);
++    let pick = null, action = null;
++    if (voluntary.length) { pick = voluntary[0]; action = "proceed"; }
++    else {
++      const backers = members.filter(x => x.n.back).sort(prio);
++      if (backers.length) { pick = backers[backers.length - 1]; action = "backoff"; }
++      else {
++        // Nobody can move away: priority inheritance (PIBT push). The member
++        // that has waited least asks the robots queued behind it to make
++        // room, so that it can back off at the next probe.
++        pick = [...members].sort(prio)[members.length - 1];
++        action = "push";
++      }
++    }
++    this.agent.logDecision("ACE_WAITFOR_CYCLE", `Circular wait ${ids.join(" -> ")} -> ${ids[0]} (${path.map(n => n.kind).join("/")}); ${pick.n.id} ${action === "proceed" ? "proceeds" : action === "push" ? "asks its followers to make room" : "backs off"}.`, { cycle: ids });
++    if (pick.n.id === this.id) this._apply(action, pick.peer, now, ids);
++    else this.agent.peerBus.unicast(this.id, pick.n.id, WF_RESOLVE, { action, peerId: pick.peer, cycle: ids });
++  }
++
++  /** Robots directly behind me (away from `awayFrom`), from my own sensors. */
++  _followers(awayFrom) {
++    const a = this.agent, ls = a.localState;
++    let fx = ls.targetX - ls.x, fy = ls.targetY - ls.y;
++    if (awayFrom) { fx = awayFrom.x - ls.x; fy = awayFrom.y - ls.y; }
++    return a._frame().detections.filter(d => !d.failed && d.dist < 46 && (d.x - ls.x) * fx + (d.y - ls.y) * fy < 0
++      && (Math.abs(d.x - ls.x) < 8 || Math.abs(d.y - ls.y) < 8)).map(d => d.id);
++  }
++
++  /** PIBT push: a robot ahead of me in the queue needs room behind it. */
++  _makeRoom(requesterId, hops, now) {
++    const a = this.agent, ls = a.localState;
++    if (!ls.currentTaskId || ls._maneuver || ls.hitlHold || ls.handling) return;
++    const req = this._peerState(requesterId);
++    this._canBack = { at: -Infinity, v: false };
++    if (this._bayStepBack(true, requesterId)
++        || (req && retreatFeasible(ls, a._neighborStates(), req) && startBackoff(ls, req, a._neighborStates()))) {
++      this.stats.backoffs++;
++      a.logDecision("ACE_WAITFOR_MAKE_ROOM", `Backing off to make room for ${requesterId} (priority inheritance).`);
++      a.broadcastStateAndIntent();
++      return;
++    }
++    if (hops >= 3) return;
++    for (const f of this._followers(req)) a.peerBus.unicast(this.id, f, WF_RESOLVE, { action: "make_room", hops: hops + 1 });
++  }
++
++  _apply(action, peerId, now, cycle) {
++    const a = this.agent;
++    if (action === "push") {
++      const peer = this._peerState(peerId);
++      const fl = this._followers(peer);
++      for (const f of fl) a.peerBus.unicast(this.id, f, WF_RESOLVE, { action: "make_room", hops: 0 });
++      if (fl.length) a.logDecision("ACE_WAITFOR_PUSH", `Wait-for cycle ${cycle.join(" -> ")}: asking ${fl.join(", ")} behind me to make room.`);
++      return;
++    }
++    if (action === "proceed") {
++      this.override = { peerId, until: now + OVERRIDE_S };
++      this.stats.proceeds++;
++      a.logDecision("ACE_WAITFOR_PROCEED", `Wait-for cycle ${cycle.join(" -> ")}: I have waited longest; proceeding before ${peerId}.`);
++      return;
++    }
++    if (this._backOff(peerId)) {
++      this.stats.backoffs++;
++      this._canBack = { at: -Infinity, v: false };
++      a.logDecision("ACE_WAITFOR_BACKOFF", `Wait-for cycle ${cycle.join(" -> ")}: backing off to release ${peerId}.`);
++      a.broadcastStateAndIntent();
++    } else {
++      this._canBack = { at: now, v: false };
++      this._apply("push", peerId, now, cycle);
++    }
++  }
++
++  /** Can I physically move out of the way (cached briefly)? */
++  _canBackOff(now) {
++    if (now - this._canBack.at < 0.5) return this._canBack.v;
++    const a = this.agent, ls = a.localState;
++    let v = false;
++    if (!ls._maneuver && !ls.hitlHold) {
++      v = !!this._bayStepBack(false);
++      if (!v) {
++        const blocker = this._peerState(this.wf && this.wf.id);
++        v = retreatFeasible(ls, a._neighborStates(), blocker);
++      }
++    }
++    this._canBack = { at: now, v };
++    return v;
++  }
++
++  _peerState(id) {
++    if (!id) return null;
++    const a = this.agent;
++    return a._sensedPeers(200).find(p => p.id === id) || a.peerCache.get(id) || null;
++  }
++
++  _backOff(peerId) {
++    const a = this.agent, ls = a.localState;
++    if (ls._maneuver || ls.hitlHold) return false;
++    if (this._bayStepBack(true, peerId)) return true;
++    const blocker = this._peerState(peerId);
++    if (blocker && a._turnBackReplan(blocker)) return true;
++    return startBackoff(ls, blocker, a._neighborStates());
++  }
++
++  /**
++   * A robot caught part-way between its bay and the lane (inside the lane's
++   * separation band, off the centerline) steps straight back into the bay
++   * cell behind it and re-merges once the lane point is clear. Uses the
++   * shared back-off maneuver state, so tickBackoff drives the hold/resume.
++   */
++  _bayStepBack(apply, blockerId = null) {
++    const a = this.agent, ls = a.localState;
++    const foot = MapGeometryEngine.projectToNearestAisle(ls.x, ls.y);
++    if (!foot) return null;
++    const gap = Math.hypot(ls.x - foot.x, ls.y - foot.y);
++    if (gap < 3 || gap >= SEP) return null;
++    const ux = (ls.x - foot.x) / gap, uy = (ls.y - foot.y) / gap;
++    const bay = { x: foot.x + ux * BAY_OFFSET, y: foot.y + uy * BAY_OFFSET };
++    if (!MapGeometryEngine.isOffLane(bay.x, bay.y) || !MapGeometryEngine.isWithinBounds(bay.x, bay.y, ROBOT_FOOTPRINT.radius)
++        || MapGeometryEngine.isPointInObstacle(bay.x, bay.y, ROBOT_FOOTPRINT.radius).collision) return null;
++    if (a._frame().detections.some(d => Math.hypot(d.x - bay.x, d.y - bay.y) < SEP)) return null;
++    if (!apply) return bay;
++    const path = ls.currentPath && ls.currentPath.length ? ls.currentPath : (ls.plannedPath || []);
++    const ti = path.findIndex(p => Math.hypot(p.x - ls.targetX, p.y - ls.targetY) < 1);
++    const resumePath = ti >= 0 ? path.slice(ti).map(p => ({ x: p.x, y: p.y })) : [{ x: foot.x, y: foot.y }];
++    ls._maneuver = {
++      phase: "retreat", intersection: { x: foot.x, y: foot.y }, refuge: bay, blockerId: blockerId || null,
++      holdElapsed: 0, totalElapsed: 0, resumePath, origin: { x: foot.x, y: foot.y }, parked: false
++    };
++    ls.plannedPath = [{ x: bay.x, y: bay.y }];
++    ls.currentPath = ls.plannedPath;
++    ls._cursorPath = null;
++    ls.pathCursor = 0;
++    ls.prevX = ls.x;
++    ls.prevY = ls.y;
++    ls.targetX = bay.x;
++    ls.targetY = bay.y;
++    ls.heading = Math.atan2(bay.y - ls.y, bay.x - ls.x);
++    ls.status = "MOVING";
++    ls.isYielding = false;
++    ls.stalledDuration = 0;
++    return bay;
++  }
++}
+diff -ruN src/core/decentralized/RobotAgent.js zz-ws2/core/decentralized/RobotAgent.js
+--- src/core/decentralized/RobotAgent.js	2026-09-27 19:15:50.470719600 -0700
++++ zz-ws2/core/decentralized/RobotAgent.js	2026-09-29 08:25:19.337437300 -0700
+@@ -36,6 +36,7 @@
+ import { AceSessionManager } from "../ace/AceSessionManager.js";
+ import { SENSOR_RANGE } from "../sensor-sim.js";
+ import { TASK_PHASE, beginHandling, tickHandling, cancelHandling, choosePostTaskBay, POST_TASK, homeBayKeys, arriveAtBay, needsService, returnLegStalled, abandonReturnLeg } from "../task-lifecycle.js";
++import { aceFeature } from "../ace/ace-features.js";
+ 
+ // Both agents yielding to each other longer than this: lower ID proceeds.
+ const MUTUAL_WAIT_SECONDS = 1.5;
+@@ -58,6 +59,28 @@
+ const nodeKeyOf = (n) => `${Math.round(n.x)},${Math.round(n.y)}`;
+ const isFailedStatus = (s) => s === "ERROR" || s === "error" || s === "failed";
+ 
++// fix-ws2-merge-gate: the engine refuses any move that closes to < 30 px of
++// another robot (sim-engine _move). A robot whose centre is closer than that
++// to a lane centerline blocks every robot passing it on the lane, even when
++// MapGeometryEngine.isOffLane (29 px) still calls it "in its bay".
++const FIX_MERGE_GATE = aceFeature("fix-ws2-merge-gate");
++const DETOUR_LOCAL = aceFeature("ws2-detour-local");
++const LANE_BLOCK_PX = ROBOT_FOOTPRINT.totalRadius * 2 - 2;
++/** Distance from (x, y) to the nearest aisle centerline that spans it. */
++function laneGap(x, y) {
++  const aisles = MapGeometryEngine.getActiveAisles();
++  const m = LANE_BLOCK_PX;
++  let best = Infinity;
++  for (const h of aisles.horizontal) if (x >= h.minX - m && x <= h.maxX + m) best = Math.min(best, Math.abs(h.y - y));
++  for (const v of aisles.vertical) if (y >= v.minY - m && y <= v.maxY + m) best = Math.min(best, Math.abs(v.x - x));
++  return best;
++}
++/** Parked clear of every lane: off-lane and not within the separation band of a lane. */
++function inBayClear(x, y) {
++  if (!MapGeometryEngine.isOffLane(x, y)) return false;
++  return !FIX_MERGE_GATE || laneGap(x, y) >= LANE_BLOCK_PX;
++}
++
+ export const ACE_LOCAL_ENVELOPE_RADIUS = 18;
+ 
+ export class RobotAgent {
+@@ -444,6 +467,7 @@
+       this.returnToBay(deltaTime);
+       this.normalizeIdle();
+     }
++    if (this.ace && this.ace.wfr) this.ace.wfr.update(now);
+     if (ls.status === "WAITING") this.metrics.waitingSeconds += deltaTime;
+ 
+     this._maybeBroadcast();
+@@ -851,14 +875,19 @@
+   mayEnter(nextX, nextY) {
+     const ls = this.localState;
+     const now = this.simNow;
+-    if (this.ace && this.ace.mustHoldBeforeRegion(nextX, nextY, now)) {
++    this._permBy = null; // ws2-waitfor: whom a refused step waits for
++    const wfr = this.ace && this.ace.wfr;
++    if (this.ace && !(wfr && wfr.overrides(undefined, now)) && this.ace.mustHoldBeforeRegion(nextX, nextY, now)) {
+       this.lastBlockedKey = this.ace.session.region.nodeKey;
++      if (wfr) this._permBy = { id: this.ace.holdFor, kind: "contract" };
+       return false;
+     }
+     // Bay merge gate: a robot parked beside a lane steps onto it only when
+     // its own sensors show the merge point clear (lane traffic has priority),
+     // so it never ends up half-merged and wedged against passing robots.
+-    if (MapGeometryEngine.isOffLane(ls.x, ls.y) && !MapGeometryEngine.isOffLane(nextX, nextY)) {
++    // (fix-ws2-merge-gate: the gate fires where the robot would start to
++    // block the lane, not 1 px inside it, so it never waits half-merged.)
++    if (inBayClear(ls.x, ls.y) && !inBayClear(nextX, nextY)) {
+       const merge = MapGeometryEngine.projectToNearestAisle(ls.x, ls.y);
+       // Robots parked in bays do not block the merge; another robot merging
+       // at the same point goes first when it has the lower ID.
+@@ -870,6 +899,7 @@
+       };
+       if (merge && this.sensorFrame.detections.some(blocksMerge)) {
+         this.lastBlockedKey = null;
++        if (wfr) this._permBy = { id: this.sensorFrame.detections.find(blocksMerge).id, kind: "merge" };
+         return false;
+       }
+     }
+@@ -887,6 +917,7 @@
+       if (!nextIn) continue;
+       if (this._corridorBlocked(node)) {
+         this.lastBlockedKey = key;
++        if (wfr) this._permBy = { id: this._corridorHold?.oncomingId || null, kind: "corridor" };
+         return false;
+       }
+       if (!this.nodeClaim || this.nodeClaim.key !== key) {
+@@ -903,10 +934,14 @@
+         if (!c || c.key !== key || (p.lastSeen ?? 0) < freshAfter || isFailedStatus(p.status)) continue;
+         if (Math.hypot(p.x - node.x, p.y - node.y) > 90) continue;
+         const stale = !c.inside && now - c.since > 4 && !(p.velocity > 0);
+-        if (c.inside || (!stale && (c.since < mine.since || (c.since === mine.since && p.id < this.robotId)))) { earlier = true; break; }
++        if (c.inside || (!stale && (c.since < mine.since || (c.since === mine.since && p.id < this.robotId)))) { earlier = p.id; break; }
+       }
+       if (occupied || earlier) {
+         this.lastBlockedKey = key;
++        if (wfr) {
++          const occ = this.sensorFrame.detections.find(d => Math.hypot(d.x - node.x, d.y - node.y) < INTERSECTION_ZONE_RADIUS);
++          this._permBy = { id: occ ? occ.id : earlier, kind: "node" };
++        }
+         return false;
+       }
+     }
+@@ -941,8 +976,10 @@
+     const peerParked = !peer.currentTaskId && (peer.status === "IDLE" || peer.status === "CHARGING" || peer.status === "STOPPED" || peer.parking);
+     const peerDistToTarget = peerParked ? Infinity
+       : peer.targetX !== undefined ? Math.hypot(peer.targetX - peer.x, peer.targetY - peer.y) : 50;
+-    const myInBay = MapGeometryEngine.isOffLane(ls.x, ls.y);
+-    const peerInBay = MapGeometryEngine.isOffLane(peer.x, peer.y);
++    // A robot inside the lane's separation band already blocks lane traffic:
++    // it is a lane robot, not a merging one (fix-ws2-merge-gate).
++    const myInBay = inBayClear(ls.x, ls.y);
++    const peerInBay = inBayClear(peer.x, peer.y);
+     const myInZone = inIntersectionZone(ls);
+     const peerInZone = inIntersectionZone(peer);
+     const outsider = myInZone ? peer : ls;
+@@ -969,12 +1006,14 @@
+    */
+   evaluatePeerConflicts(deltaTime) {
+     const ls = this.localState;
++    this._yieldTo = null; // ws2-waitfor: whom I yield to this tick
+     if (ls._maneuver) {
+       const blockerId = ls._maneuver.blockerId;
+       tickBackoff(ls, blockerId ? this.peerCache.get(blockerId) : null, deltaTime, this._neighborStates());
+       return;
+     }
+     let shouldYield = false, conflictPeerId = null, conflictReason = null, pairWait = false;
++    const wfr = this.ace && this.ace.wfr;
+ 
+     for (const peer of this._sensedPeers(CONFLICT_RADIUS)) {
+       if (isFailedStatus(peer.status)) continue;
+@@ -998,8 +1037,10 @@
+           iWin = false; reason = `Awaiting pair slot with ${peer.id}`; pairWait = true;
+         }
+       } else if (this.ace) {
+-        const dec = this.ace.decide(peer.id);
++        const dec = this.ace.decide(peer.id, reason);
+         if (dec) { iWin = dec.iWin; reason = dec.reason; }
++        // ws2-waitfor: a resolved circular wait lets me pass this peer.
++        if (!iWin && wfr && wfr.overrides(peer.id, this.simNow)) { iWin = true; reason = "Wait-for cycle resolution"; }
+       }
+ 
+       // Mutual wait: both concluded they must yield. After MUTUAL_WAIT_SECONDS
+@@ -1018,6 +1059,7 @@
+       }
+     }
+ 
++    if (shouldYield && !pairWait) this._yieldTo = conflictPeerId;
+     if (shouldYield) {
+       ls.status = "WAITING";
+       ls.velocity = 0;
+@@ -1277,6 +1319,7 @@
+     const key = nodeKeyOf(node);
+     if (!this._corridorHold || this._corridorHold.key !== key) this._corridorHold = { key, since: now, detourTried: false, logged: false };
+     const hold = this._corridorHold;
++    hold.oncomingId = oncoming.id;
+     if (!hold.detourTried) {
+       hold.detourTried = true;
+       if (this._corridorDetour(node, next, oncoming.id)) return true;
+@@ -1628,7 +1671,8 @@
+     const contested = this.localPlanner.contestedEdgeKey({ x: ls.x, y: ls.y }, { x: ls.targetX, y: ls.targetY });
+     if (contested) avoidEdges.add(contested);
+     // In an ACE session the contracted region is avoided as a whole.
+-    const region = this.ace?.session?.region;
++    // ws2-detour-local: only the contested edge is avoided, not the whole hub.
++    const region = DETOUR_LOCAL ? null : this.ace?.session?.region;
+     if (region) {
+       const hub = this.localPlanner.neighborsOf(region.x, region.y);
+       for (const n of hub?.neighbors || []) {

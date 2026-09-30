@@ -1,0 +1,13 @@
+node_modules
+dist
+bench
+docs
+tests
+zz-*
+.vitest
+.claude
+graft
+*.log
+backend/__pycache__
+backend/shared_state.backup-*.json
+backend/*.tmp

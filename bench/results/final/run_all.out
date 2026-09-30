@@ -1,0 +1,6 @@
+merged 168 runs from 10 shards into bench\results\final\A_src_all.jsonl in 5715 s; exit codes 0,0,0,0,0,0,0,0,0,0
+merged 28 runs from 10 shards into bench\results\final\C_ws1.jsonl in 673 s; exit codes 0,0,0,0,0,0,0,0,0,0
+merged 28 runs from 10 shards into bench\results\final\C_ws2.jsonl in 447 s; exit codes 0,0,0,0,0,0,0,0,0,0
+merged 28 runs from 10 shards into bench\results\final\C_ws3.jsonl in 1320 s; exit codes 0,0,0,0,0,0,0,0,0,0
+merged 24 runs from 10 shards into bench\results\final\D_acetests.jsonl in 54 s; exit codes 0,0,0,0,0,0,0,0,0,0
+ALLDONE

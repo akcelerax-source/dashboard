@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NODEX ACE | Adaptive Fleet Coordination Dashboard - SIH 2026</title>
+  <meta name="description" content="NodeX ACE-AMR Fleet Operations, RACE Intelligence, Simulation Control, and Evaluation Dashboard for SIH 2026.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/styles/theme.css">
+  <link rel="stylesheet" href="/src/styles/shell.css">
+  <link rel="stylesheet" href="/src/styles/map.css">
+  <link rel="stylesheet" href="/src/styles/screens.css">
+  <link rel="stylesheet" href="/src/styles/settings-popups.css">
+</head>
+<body class="theme-dark">
+  <!-- Application Container -->
+  <div id="app" class="app-root">
+    <!-- Top Global Header -->
+    <header id="global-header" class="global-header"></header>
+
+    <!-- Floating Navigation & Command Bar Dock -->
+    <div id="floating-dock-container" class="floating-dock-container"></div>
+
+    <!-- Main Dynamic Screen View -->
+    <main id="screen-container" class="screen-container" role="main">
+      <div id="screen-operations" class="screen-panel active"></div>
+      <div id="screen-coordination" class="screen-panel"></div>
+      <div id="screen-control" class="screen-panel"></div>
+      <div id="screen-experiments" class="screen-panel"></div>
+    </main>
+
+    <!-- Global Persistent Footer -->
+    <footer id="global-footer" class="global-footer"></footer>
+
+    <!-- Global Modals and Overlays -->
+    <div id="modal-container" class="modal-container"></div>
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

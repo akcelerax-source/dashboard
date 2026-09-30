@@ -1,0 +1,9 @@
+centralized   S01 n=10 s=1 done=10/10 sim=92 (base 10/10 sim=112.4) cyc=49.23 wait=0.176 stops=5.2 near=10 cbsBounded=0/10 digest=diff wall=1.061
+decentralized S01 n=10 s=1 done=10/10 sim=137.4 (base 10/10 sim=126.8) cyc=85.96 wait=0.245 stops=15.5 near=39 digest=diff wall=2.23
+ace           S01 n=10 s=1 done=10/10 sim=207.5 (base 10/10 sim=249.6) cyc=140.92 wait=0.512 stops=14.8 near=61 digest=diff wall=4.235
+centralized   S08 n=10 s=1 done=39/42 sim=600 (base 42/42 sim=434.4) cyc=152.062 wait=0.317 stops=66.1 near=191 cbsBounded=1/90 digest=diff wall=4.616
+decentralized S08 n=10 s=1 done=32/42 sim=600 (base 29/42 sim=600) cyc=120.228 wait=0.694 stops=68.6 near=138 digest=diff wall=11.907
+ace           S08 n=10 s=1 done=37/42 sim=600 (base 42/42 sim=389.8) cyc=187.027 wait=0.511 stops=61.9 near=94 digest=diff wall=11.057
+centralized   S13 n=10 s=1 done=52/52 sim=405.6 (base 52/52 sim=418.6) cyc=176.998 wait=0.3 stops=55.7 near=95 cbsBounded=2/70 digest=diff wall=3.297
+decentralized S13 n=10 s=1 done=52/52 sim=375.4 (base 52/52 sim=488.7) cyc=183.096 wait=0.282 stops=49.1 near=62 digest=diff wall=5.839
+ace           S13 n=10 s=1 done=52/52 sim=671.7 (base 48/52 sim=900) cyc=331.698 wait=0.491 stops=77.6 near=144 digest=diff wall=13.111

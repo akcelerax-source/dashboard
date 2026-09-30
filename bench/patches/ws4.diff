@@ -1,0 +1,237 @@
+diff -ruN src/core/centralized/CBSPlanner.js zz-ws4/core/centralized/CBSPlanner.js
+--- src/core/centralized/CBSPlanner.js	2026-09-27 01:03:19.000245000 -0700
++++ zz-ws4/core/centralized/CBSPlanner.js	2026-09-28 23:33:22.254205000 -0700
+@@ -20,6 +20,12 @@
+ // then handled at run time by the central conflict manager.
+ // ==========================================================================
+ 
++import { aceFeature } from "../ace/ace-features.js";
++
++// WS4 fix-cbs-fallback: on truncation return the best node found so far as the
++// header documents (fewest conflicts, then lowest cost), not the deepest one.
++const FIX_CBS_FALLBACK = aceFeature("fix-cbs-fallback");
++
+ export const CBS_STEP_SECONDS = 1.0;      // one discrete time step
+ export const ROBOT_SPEED_PX_S = 1.2 * 22; // nominal cruise speed (engine: velocity * 22 px/s)
+ const MAX_CT_NODES = 120;
+@@ -209,6 +215,29 @@
+   }
+ 
+   /**
++   * Number of conflicts (vertex overlaps + head-on lane swaps, same
++   * definitions as findConflict) over all agent pairs (fix-cbs-fallback).
++   */
++  countAllConflicts(paths) {
++    const ids = Object.keys(paths);
++    const iv = {};
++    for (const id of ids) iv[id] = this._intervals(paths[id]);
++    let n = 0;
++    for (let x = 0; x < ids.length; x++) {
++      for (let y = x + 1; y < ids.length; y++) {
++        const A = iv[ids[x]], B = iv[ids[y]];
++        for (const va of A.visits) for (const vb of B.visits) {
++          if (va.node === vb.node && Math.max(va.a, vb.a) <= Math.min(va.d, vb.d)) n++;
++        }
++        for (const ea of A.edges) for (const eb of B.edges) {
++          if (ea.u === eb.v && ea.v === eb.u && ea.s < eb.e && eb.s < ea.e) n++;
++        }
++      }
++    }
++    return n;
++  }
++
++  /**
+    * @param {Array} agents - [{ id, start, startTime, goals:[nodeId...], blockedNodes:Set }]
+    * @returns {{ paths: Object<id, [{id,t}]>, conflictsResolved, ctNodes, truncated, ms, unsolved:[] }}
+    */
+@@ -225,12 +254,14 @@
+     const byId = new Map(agents.map(a => [a.id, a]));
+     const open = new Heap((x, y) => x.cost < y.cost || (x.cost === y.cost && x.depth > y.depth));
+     open.push(root);
+-    let expanded = 0, resolved = 0, best = root, truncated = false;
++    let expanded = 0, resolved = 0, best = root, truncated = false, solved = false;
++    const popped = []; // fix-cbs-fallback: every node found to still conflict
+     while (open.size) {
+       const node = open.pop();
+       const conflict = this.findConflict(node.paths);
+-      if (!conflict) { best = node; break; }
+-      if (node.depth > best.depth) best = node;
++      if (!conflict) { best = node; solved = true; break; }
++      if (FIX_CBS_FALLBACK) popped.push(node);
++      else if (node.depth > best.depth) best = node;
+       if (++expanded > MAX_CT_NODES) { truncated = true; break; }
+       resolved++;
+       for (const who of [conflict.a, conflict.b]) {
+@@ -253,6 +284,15 @@
+         open.push({ cons, paths, cost, depth: node.depth + 1 });
+       }
+     }
++    if (FIX_CBS_FALLBACK && !solved && popped.length) {
++      // Not solved within the bound: the best node found so far is the one
++      // with the fewest conflicts (then the lowest cost), as documented above.
++      let bestN = Infinity;
++      for (const nd of popped) {
++        const n = this.countAllConflicts(nd.paths);
++        if (n < bestN || (n === bestN && nd.cost < best.cost)) { bestN = n; best = nd; }
++      }
++    }
+     const ms = (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0;
+     this.stats.ctNodesExpanded += expanded;
+     this.stats.conflictsResolved += resolved;
+diff -ruN src/core/centralized/CentralizedCoordinator.js zz-ws4/core/centralized/CentralizedCoordinator.js
+--- src/core/centralized/CentralizedCoordinator.js	2026-09-27 04:07:13.152765900 -0700
++++ zz-ws4/core/centralized/CentralizedCoordinator.js	2026-09-28 22:34:33.507486700 -0700
+@@ -25,6 +25,12 @@
+ import { state } from "../state.js";
+ import { TASK_PHASE, beginHandling, tickHandling, cancelHandling } from "../task-lifecycle.js";
+ import { startBackoff, tickBackoff, isHeadOnConflict, chooseYielder, RETREAT_TRIGGER_SECONDS } from "../deadlock-backoff.js";
++import { aceFeature } from "../ace/ace-features.js";
++
++// WS4 fix-wait-timer: stalledDuration of a waiting robot is advanced once per
++// tick by the execution engine (sim-engine.js); the coordinator no longer adds
++// deltaTime a second time (every "> N s" wait rule fired at N/2 s).
++const FIX_WAIT_TIMER = aceFeature("fix-wait-timer");
+ 
+ export const CENTRAL_CYCLE_SECONDS = 0.5;   // central allocation / planning period
+ const CBS_REPLAN_SECONDS = 8.0;             // periodic joint replan while tasks run
+@@ -385,7 +391,7 @@
+             loser.status = "WAITING";
+             loser.velocity = 0;
+             loser.isYielding = true;
+-            loser.stalledDuration += deltaTime;
++            if (!FIX_WAIT_TIMER) loser.stalledDuration += deltaTime; // engine counts it (fix-wait-timer)
+             this.runStats.totalWaitingTime += deltaTime;
+           }
+         }
+diff -ruN src/core/decentralized/RobotAgent.js zz-ws4/core/decentralized/RobotAgent.js
+--- src/core/decentralized/RobotAgent.js	2026-09-27 19:15:50.470719600 -0700
++++ zz-ws4/core/decentralized/RobotAgent.js	2026-09-28 22:42:56.999922200 -0700
+@@ -36,6 +36,19 @@
+ import { AceSessionManager } from "../ace/AceSessionManager.js";
+ import { SENSOR_RANGE } from "../sensor-sim.js";
+ import { TASK_PHASE, beginHandling, tickHandling, cancelHandling, choosePostTaskBay, POST_TASK, homeBayKeys, arriveAtBay, needsService, returnLegStalled, abandonReturnLeg } from "../task-lifecycle.js";
++import { aceFeature } from "../ace/ace-features.js";
++
++// WS4 baseline-integrity fixes (shared by System 2 and System 3), see docs/changes/ws4.md.
++// fix-wait-timer: stalledDuration is advanced once per tick by the execution
++//   engine (sim-engine.js); the agent no longer adds deltaTime a second time.
++const FIX_WAIT_TIMER = aceFeature("fix-wait-timer");
++// fix-cnp-window: a Contract-Net auction closes one full fleet tick after the
++//   robot bid, when every eligible peer's bid has arrived (was: same tick).
++const FIX_CNP_WINDOW = aceFeature("fix-cnp-window");
++// fix-cnp-committed: the award goes to the lowest bid among bidders that are
++//   still available (a bidder known to have committed to another task since
++//   bidding cannot take this one).
++const FIX_CNP_COMMITTED = aceFeature("fix-cnp-committed");
+ 
+ // Both agents yielding to each other longer than this: lower ID proceeds.
+ const MUTUAL_WAIT_SECONDS = 1.5;
+@@ -670,10 +683,19 @@
+     const now = this.now();
+     for (const [taskId, record] of this.activeBids.entries()) {
+       record.ticksElapsed = (record.ticksElapsed || 0) + 1;
+-      if (record.ticksElapsed >= 1 || (now - record.announcedAt >= 50)) {
++      // fix-cnp-window: the record is created while the inbox is processed in
++      // this same tick, so "ticksElapsed >= 1" closed the auction at once (the
++      // 50 ms window was dead code), before the peers that tick after me
++      // (higher IDs) could bid, and their bids were then dropped: the
++      // lowest-ID idle robot always won. Close it one tick / 50 ms later,
++      // when every peer has ticked once and every eligible bid has arrived.
++      const closed = (FIX_CNP_WINDOW ? record.ticksElapsed >= 2 : record.ticksElapsed >= 1)
++        || (now - record.announcedAt >= 50);
++      if (closed) {
+         let lowestCost = Infinity;
+         let winningRobotId = null;
+         for (const [bidderId, cost] of record.bids.entries()) {
++          if (FIX_CNP_COMMITTED && !this._bidderAvailable(bidderId, taskId)) continue;
+           if (cost < lowestCost) {
+             lowestCost = cost;
+             winningRobotId = bidderId;
+@@ -693,6 +715,23 @@
+   }
+ 
+   /**
++   * fix-cnp-committed: a bid is valid only while its bidder is still free.
++   * A bidder that has since committed to another task (known from its own
++   * state broadcast, sent the moment it claims) or failed cannot take this
++   * task, so the award passes to the next-lowest valid bid.
++   */
++  _bidderAvailable(bidderId, taskId) {
++    if (bidderId === this.robotId) {
++      const ls = this.localState;
++      return ls.status !== "ERROR" && (!ls.currentTaskId || ls.currentTaskId === taskId);
++    }
++    const p = this.peerCache.get(bidderId);
++    if (!p) return true;
++    if (isFailedStatus(p.status)) return false;
++    return !p.currentTaskId || p.currentTaskId === taskId;
++  }
++
++  /**
+    * Local admission estimate: tasks in flight as known from my own state and
+    * my peers' broadcasts (no global registry read).
+    */
+@@ -1022,7 +1061,7 @@
+       ls.status = "WAITING";
+       ls.velocity = 0;
+       ls.isYielding = true;
+-      ls.stalledDuration += deltaTime;
++      if (!FIX_WAIT_TIMER) ls.stalledDuration += deltaTime; // engine counts it (fix-wait-timer)
+       if (pairWait && this.pair) this.pair.noteWait(deltaTime);
+       this.logDecision(pairWait ? "PAIR_WAIT" : "YIELD_WAIT", `Yielding right-of-way to peer ${conflictPeerId} (${conflictReason})`);
+       if (pairWait) return; // cannot act on a conflict that was not negotiated
+diff -ruN src/core/scenario-engine.js zz-ws4/core/scenario-engine.js
+--- src/core/scenario-engine.js	2026-09-28 20:50:14.073511300 -0700
++++ zz-ws4/core/scenario-engine.js	2026-09-28 22:36:00.634205300 -0700
+@@ -12,6 +12,11 @@
+ import { WAREHOUSE_TASK_LOCATIONS } from "./centralized/TaskManager.js";
+ import { centralizedCoordinator } from "./centralized/CentralizedCoordinator.js";
+ import { decentralizedFleet } from "./decentralized/DecentralizedFleet.js";
++import { aceFeature } from "./ace/ace-features.js";
++
++// WS4 fix-health-speed: health degradation also records the drive train's
++// physical speed cap (applied by the execution engine to every system).
++const FIX_HEALTH_SPEED = aceFeature("fix-health-speed");
+ import { MapGeometryEngine } from "./map-geometry.js";
+ import { aceTestMonitor } from "./ace-test-monitor.js";
+ import { varyWorkload, jitterTrigger } from "./seeded-workload.js";
+@@ -647,6 +652,7 @@
+       const patch = { health };
+       if (health < 30 && r.status !== "error") {
+         patch.targetVelocity = Math.max(0.3, (r.targetVelocity || 1.2) * 0.8);
++        if (FIX_HEALTH_SPEED) patch.healthSpeedCap = Math.max(0.3, (r.healthSpeedCap ?? 1.2) * 0.8);
+         if (health < 10) patch.status = "error";
+       }
+       this.simEngineRef.updateRobot(robotId, patch);
+diff -ruN src/core/sim-engine.js zz-ws4/core/sim-engine.js
+--- src/core/sim-engine.js	2026-09-27 18:11:00.590976200 -0700
++++ zz-ws4/core/sim-engine.js	2026-09-28 22:36:00.630202200 -0700
+@@ -24,6 +24,7 @@
+ import { PhysicsMonitor } from "./physics-monitor.js";
+ import { senseFrame, resetSensorNoise } from "./sensor-sim.js";
+ import { deriveTaskPhase } from "./task-lifecycle.js";
++import { aceFeature } from "./ace/ace-features.js";
+ import {
+   MapGeometryEngine,
+   WAREHOUSE_DIMENSIONS,
+@@ -33,6 +34,9 @@
+   worldTierFor
+ } from "./map-geometry.js";
+ 
++// WS4 fix-health-speed (see applyOperatorOverrides and scenario-engine.js).
++const FIX_HEALTH_SPEED = aceFeature("fix-health-speed");
++
+ export const CONTROLLER_CLASSES = {
+   centralized: "CentralizedCoordinator (central server: Hungarian + CBS + central detector)",
+   decentralized: "RobotAgent x N (CNP bidding + fixed-pair P2P + sensor-only detection)",
+@@ -87,6 +91,10 @@
+  */
+ export function applyOperatorOverrides(r, velocity, systemMode = "ace") {
+   if (r.scenarioStall) return 0;
++  // fix-health-speed: a health-degraded drive train cannot exceed its degraded
++  // speed, whatever the controller commands (identical for all three systems;
++  // ACE's envelope logic rewrote targetVelocity every tick and so ignored it).
++  if (FIX_HEALTH_SPEED && typeof r.healthSpeedCap === "number") velocity = Math.min(velocity, r.healthSpeedCap);
+   if (systemMode !== "ace") return velocity;
+   if (r.hitlHold || r.controlMode === "HUMAN") return 0;
+   if (typeof r.hitlSpeedLimit === "number") return Math.min(velocity, r.hitlSpeedLimit);
