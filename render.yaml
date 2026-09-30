@@ -1,0 +1,14 @@
+# Render Blueprint: one web service running the Dockerfile (FastAPI backend
+# serving the built dashboard at "/", API at /api, WebSockets at /ws).
+# Render sets PORT; the server reads it.
+services:
+  - type: web
+    name: nodex-ace
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODEX_PUBLIC
+        value: "1"
